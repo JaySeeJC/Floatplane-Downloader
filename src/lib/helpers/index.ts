@@ -58,11 +58,26 @@ export const fApi = new Floatplane({
 });
 
 // Add floatplane api request metrics
+const requestHistogramSeries = new Map<string, { hostname: string; pathname: string; status: string; lastObservedAt: number }>();
+const requestHistogramSeriesTtlMs = 6 * 60 * 1000;
 const httpRequestDurationmMs = new Histogram({
 	name: "request_duration_ms",
 	help: "Duration of HTTP requests in ms",
-	labelNames: ["method", "hostname", "pathname", "status"],
-	buckets: [5, 10, 15, 30, 50, 100, 250, 500, 750, 1000, 1500, 2000, 3000],
+	labelNames: ["hostname", "pathname", "status"],
+	buckets: [10, 25, 50, 100, 250, 500, 1000, 3000],
+	collect() {
+		const expirationTime = Date.now() - requestHistogramSeriesTtlMs;
+		for (const [key, series] of requestHistogramSeries) {
+			if (series.lastObservedAt < expirationTime) {
+				this.remove({
+					hostname: series.hostname,
+					pathname: series.pathname,
+					status: series.status,
+				});
+				requestHistogramSeries.delete(key);
+			}
+		}
+	},
 });
 type WithStartTime<T> = T & { _startTime: number };
 fApi.extend({
@@ -78,7 +93,10 @@ fApi.extend({
 				const options = <WithStartTime<typeof res.request.options>>res.request.options;
 				const thumbsIndex = url.pathname.indexOf("thumbnails");
 				const pathname = thumbsIndex !== -1 ? url.pathname.substring(0, thumbsIndex + 10) : url.pathname;
-				httpRequestDurationmMs.observe({ method: options.method, hostname: url.hostname, pathname, status: res.statusCode }, Date.now() - options._startTime);
+				const labels = { hostname: url.hostname, pathname, status: res.statusCode.toString() };
+				const key = JSON.stringify(labels);
+				requestHistogramSeries.set(key, { ...labels, lastObservedAt: Date.now() });
+				httpRequestDurationmMs.observe(labels, Date.now() - options._startTime);
 				return res;
 			},
 		],

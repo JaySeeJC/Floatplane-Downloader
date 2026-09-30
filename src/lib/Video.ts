@@ -36,10 +36,22 @@ const promQueued = new Gauge({
 	name: "queued",
 	help: "Videos waiting to download",
 });
-const promErrors = new Counter({
+const pendingErrors = new Map<string, number>();
+const previouslyCollectedErrors = new Set<string>();
+const promErrors = new Gauge({
 	name: "errors",
-	help: "Video errors",
-	labelNames: ["message", "attachmentId"],
+	help: "Video errors observed since the previous metrics collection",
+	labelNames: ["message"],
+	collect() {
+		for (const message of previouslyCollectedErrors) this.remove({ message });
+		previouslyCollectedErrors.clear();
+
+		for (const [message, count] of pendingErrors) {
+			this.set({ message }, count);
+			previouslyCollectedErrors.add(message);
+		}
+		pendingErrors.clear();
+	},
 });
 const promDownloadedTotal = new Counter({
 	name: "downloaded_total",
@@ -163,7 +175,7 @@ export class Video extends Attachment {
 		console.error(`[${this.videoTitle}]`, errStatement);
 
 		const errStr = ProgressLogger.sanitizeError(err);
-		promErrors.labels({ message: errStr, attachmentId: this.attachmentId }).inc();
+		pendingErrors.set(errStr, (pendingErrors.get(errStr) ?? 0) + 1);
 
 		const message = `Error downloading ${this.videoTitle} from ${this.channelTitle}: ${errStr}`;
 		telegramMsg(message);
